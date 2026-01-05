@@ -8,7 +8,14 @@ import { connect } from 'cloudflare:sockets';
 
 let subPath = 'link';     // 节点订阅路径,不修改将使用uuid作为订阅路径
 let password = '123456';  // 主页密码,建议修改或添加 PASSWORD环境变量
-let proxyIP = '210.61.97.241:81';  // proxyIP
+// ProxyIP 列表 - 适合中国访问的备用地址
+let proxyIPList = [
+    'cdn.xn--b6gac.eu.org',           // 亚洲优化
+    'cdn-all.xn--b6gac.eu.org',       // 全球 CDN
+    'edgetunnel.anycast.eu.org',      // 备用
+    'cdn.anycast.eu.org',             // 备用
+];
+let proxyIP = proxyIPList[Math.floor(Math.random() * proxyIPList.length)];  // 随机选择一个
 let yourUUID = 'c55a89c6-5faa-4ab5-9ad6-5865a3586aa9'; // UUID,建议修改或添加环境便量
 let disabletro = false;  // 是否关闭trojan, 设置为true时关闭，false开启 
 
