@@ -6,8 +6,8 @@
 
 import { connect } from 'cloudflare:sockets';
 
-let subPath = 'link';     // 节点订阅路径,不修改将使用uuid作为订阅路径
-let password = '123456';  // 主页密码,建议修改或添加 PASSWORD环境变量
+const subPath = 'link';     // 节点订阅路径,不修改将使用uuid作为订阅路径
+const password = '123456al';  // 主页密码,建议修改或添加 PASSWORD环境变量
 // ProxyIP 列表 - 适合中国访问的备用地址
 let proxyIPList = [
     'cdn.xn--b6gac.eu.org',           // 亚洲优化
@@ -15,9 +15,14 @@ let proxyIPList = [
     'edgetunnel.anycast.eu.org',      // 备用
     'cdn.anycast.eu.org',             // 备用
 ];
-let proxyIP = proxyIPList[Math.floor(Math.random() * proxyIPList.length)];  // 随机选择一个
-let yourUUID = 'c55a89c6-5faa-4ab5-9ad6-5865a3586aa9'; // UUID,建议修改或添加环境便量
-let disabletro = false;  // 是否关闭trojan, 设置为true时关闭，false开启 
+const yourUUID = 'c55a89c6-5faa-4ab5-9ad6-5865a3586aa9'; // UUID,建议修改或添加环境便量
+const disabletro = false;  // 是否关闭trojan, 设置为true时关闭，false开启 
+const defaultConfig = Object.freeze({
+    subPath,
+    password,
+    yourUUID,
+    disabletro,
+});
 
 // CDN 
 let cfip = [ // 格式:优选域名:端口#备注名称、优选IP:端口#备注名称、[ipv6优选]:端口#备注名称、优选域名#备注 
@@ -133,6 +138,35 @@ function isSpeedTestSite(hostname) {
     return false;
 }
 
+function parseBoolean(value, fallback = false) {
+    if (value === undefined || value === null) return fallback;
+    if (typeof value === 'boolean') return value;
+    const normalized = String(value).trim().toLowerCase();
+    if (['true', '1', 'yes', 'on'].includes(normalized)) return true;
+    if (['false', '0', 'no', 'off', ''].includes(normalized)) return false;
+    return fallback;
+}
+
+function getRequestConfig(env) {
+    const uuid = env.UUID || env.uuid || defaultConfig.yourUUID;
+    const resolvedPassword = env.PASSWORD || env.PASSWD || env.password || defaultConfig.password;
+    const configuredSubPath = env.SUB_PATH || env.subpath || defaultConfig.subPath;
+    const resolvedSubPath = (configuredSubPath === 'link' || configuredSubPath === '') ? uuid : configuredSubPath;
+    const resolvedDisabletro = parseBoolean(env.DISABLE_TROJAN ?? env.CLOSE_TROJAN, defaultConfig.disabletro);
+    const configuredProxy = env.PROXYIP || env.proxyip || env.proxyIP;
+    const resolvedProxyIP = configuredProxy
+        ? configuredProxy.split(',').map(s => s.trim()).filter(Boolean)[0]
+        : proxyIPList[Math.floor(Math.random() * proxyIPList.length)];
+
+    return {
+        uuid,
+        password: resolvedPassword,
+        subPath: resolvedSubPath,
+        disabletro: resolvedDisabletro,
+        proxyIP: resolvedProxyIP || proxyIPList[0],
+    };
+}
+
 async function sha224(text) {
   const encoder = new TextEncoder();
   const data = encoder.encode(text);
@@ -245,19 +279,7 @@ export default {
 	 */
     async fetch(request, env, ctx) {
         try {
-
-			if (subPath === 'link' || subPath === '') {
-				subPath = yourUUID;
-			}
-
-            if (env.PROXYIP || env.proxyip || env.proxyIP) {
-                const servers = (env.PROXYIP || env.proxyip || env.proxyIP).split(',').map(s => s.trim());
-                proxyIP = servers[0]; 
-            }
-            password = env.PASSWORD || env.PASSWD || env.password || password;
-            subPath = env.SUB_PATH || env.subpath || subPath;
-            yourUUID = env.UUID || env.uuid || yourUUID;
-            disabletro = env.DISABLE_TROJAN || env.CLOSE_TROJAN || disabletro;
+            const requestConfig = getRequestConfig(env);
             
             const url = new URL(request.url);
             const pathname = url.pathname;
@@ -271,8 +293,7 @@ export default {
                 }
 
                 if (pathProxyIP && !request.headers.get('Upgrade')) {
-                    proxyIP = pathProxyIP;
-                    return new Response(`set proxyIP to: ${proxyIP}\n\n`, {
+                    return new Response(`set proxyIP to: ${pathProxyIP}\n\n`, {
                         headers: { 
                             'Content-Type': 'text/plain; charset=utf-8',
                             'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0',
@@ -292,19 +313,19 @@ export default {
                 }
                 
                 const customProxyIP = wsPathProxyIP || url.searchParams.get('proxyip') || request.headers.get('proxyip');
-                return await handleVlsRequest(request, customProxyIP);
+                return await handleVlsRequest(request, customProxyIP, requestConfig);
             } else if (request.method === 'GET') {
                 if (url.pathname === '/') {
-                    return await getHomePage(request);
+                    return await getHomePage(request, requestConfig);
                 }
                 
             } else if (request.method === 'POST' && url.pathname === '/login') {
-                return await handleLogin(request);
+                return await handleLogin(request, requestConfig);
             }
             
             if (request.method === 'GET') {
                 
-                if (url.pathname.toLowerCase().includes(`/${subPath.toLowerCase()}`)) {
+                if (url.pathname.toLowerCase().includes(`/${requestConfig.subPath.toLowerCase()}`)) {
                     const currentDomain = url.hostname;
                     const vlsHeader = 'v' + 'l' + 'e' + 's' + 's';
                     const troHeader = 't' + 'r' + 'o' + 'j' + 'a' + 'n';
@@ -332,12 +353,12 @@ export default {
                         }
                         
                         const vlsNodeName = nodeName ? `${nodeName}-${vlsHeader}` : `Workers-${vlsHeader}`;
-                        return `${vlsHeader}://${yourUUID}@${host}:${port}?encryption=none&security=tls&sni=${currentDomain}&fp=firefox&allowInsecure=1&type=ws&host=${currentDomain}&path=%2F%3Fed%3D2560#${vlsNodeName}`;
+                        return `${vlsHeader}://${requestConfig.uuid}@${host}:${port}?encryption=none&security=tls&sni=${currentDomain}&fp=firefox&allowInsecure=1&type=ws&host=${currentDomain}&path=%2F%3Fed%3D2560#${vlsNodeName}`;
                     });
                     
                     // 生成 Tro-jan 节点
                     let allLinks = [...vlsLinks];
-                    if (!disabletro) {
+                    if (!requestConfig.disabletro) {
                         const troLinks = cfip.map(cdnItem => {
                             let host, port = 443, nodeName = '';
                             if (cdnItem.includes('#')) {
@@ -360,7 +381,7 @@ export default {
                             }
                             
                             const troNodeName = nodeName ? `${nodeName}-${troHeader}` : `Workers-${troHeader}`;
-                            return `${troHeader}://${yourUUID}@${host}:${port}?security=tls&sni=${currentDomain}&fp=firefox&allowInsecure=1&type=ws&host=${currentDomain}&path=%2F%3Fed%3D2560#${troNodeName}`;
+                            return `${troHeader}://${requestConfig.uuid}@${host}:${port}?security=tls&sni=${currentDomain}&fp=firefox&allowInsecure=1&type=ws&host=${currentDomain}&path=%2F%3Fed%3D2560#${troNodeName}`;
                         });
                         allLinks = [...vlsLinks, ...troLinks];
                     }
@@ -385,7 +406,7 @@ export default {
  * 
  * @param {import("@cloudflare/workers-types").Request} request
  */
-async function handleVlsRequest(request, customProxyIP) {
+async function handleVlsRequest(request, customProxyIP, requestConfig) {
     const wssPair = new WebSocketPair();
     const [clientSock, serverSock] = Object.values(wssPair);
     serverSock.accept();
@@ -405,8 +426,8 @@ async function handleVlsRequest(request, customProxyIP) {
                 return;
             }
             
-            if (!disabletro) {
-                const trojanResult = await parsetroHeader(chunk, yourUUID);
+            if (!requestConfig.disabletro) {
+                const trojanResult = await parsetroHeader(chunk, requestConfig.uuid);
                 if (!trojanResult.hasError) {
                     isTrojan = true;
                     const { addressType, port, hostname, rawClientData } = trojanResult;
@@ -415,12 +436,12 @@ async function handleVlsRequest(request, customProxyIP) {
                         throw new Error('Speedtest site is blocked');
                     }
                     
-                    await forwardataTCP(hostname, port, rawClientData, serverSock, null, remoteConnWrapper, customProxyIP);
+                    await forwardataTCP(hostname, port, rawClientData, serverSock, null, remoteConnWrapper, customProxyIP, requestConfig.proxyIP);
                     return;
                 }
             }
             
-            const { hasError, message, addressType, port, hostname, rawIndex, version, isUDP } = parseVLsPacketHeader(chunk, yourUUID);
+            const { hasError, message, addressType, port, hostname, rawIndex, version, isUDP } = parseVLsPacketHeader(chunk, requestConfig.uuid);
             if (hasError) throw new Error(message);
 
             if (isSpeedTestSite(hostname)) {
@@ -434,7 +455,7 @@ async function handleVlsRequest(request, customProxyIP) {
             const respHeader = new Uint8Array([version[0], 0]);
             const rawData = chunk.slice(rawIndex);
             if (isDnsQuery) return forwardataudp(rawData, serverSock, respHeader);
-            await forwardataTCP(hostname, port, rawData, serverSock, respHeader, remoteConnWrapper, customProxyIP);
+            await forwardataTCP(hostname, port, rawData, serverSock, respHeader, remoteConnWrapper, customProxyIP, requestConfig.proxyIP);
         },
     })).catch((err) => {
         // console.error('Readable pipe error:', err);
@@ -659,7 +680,7 @@ async function connect2Http(proxyConfig, targetHost, targetPort, initialData) {
     }
 }
 
-async function forwardataTCP(host, portNum, rawData, ws, respHeader, remoteConnWrapper, customProxyIP) {
+async function forwardataTCP(host, portNum, rawData, ws, respHeader, remoteConnWrapper, customProxyIP, defaultProxyIP) {
     async function connectDirect(address, port, data) {
         const remoteSock = connect({ hostname: address, port: port });
         const writer = remoteSock.writable.getWriter();
@@ -675,10 +696,10 @@ async function forwardataTCP(host, portNum, rawData, ws, respHeader, remoteConnW
         if (proxyConfig && (proxyConfig.type === 'socks5' || proxyConfig.type === 'http' || proxyConfig.type === 'https')) {
             shouldUseProxy = true;
         } else if (!proxyConfig) {
-            proxyConfig = parsePryAddress(proxyIP) || { type: 'direct', host: proxyIP, port: 443 };
+            proxyConfig = parsePryAddress(defaultProxyIP) || { type: 'direct', host: defaultProxyIP, port: 443 };
         }
     } else {
-        proxyConfig = parsePryAddress(proxyIP) || { type: 'direct', host: proxyIP, port: 443 };
+        proxyConfig = parsePryAddress(defaultProxyIP) || { type: 'direct', host: defaultProxyIP, port: 443 };
         if (proxyConfig.type === 'socks5' || proxyConfig.type === 'http' || proxyConfig.type === 'https') {
             shouldUseProxy = true;
         }
@@ -835,7 +856,7 @@ async function forwardataudp(udpChunk, webSocket, respHeader) {
  * @param {import("@cloudflare/workers-types").Request} request
  * @returns {Response}
  */
-async function getHomePage(request) {
+async function getHomePage(request, requestConfig) {
 	const url = request.headers.get('Host');
 	const baseUrl = `https://${url}`;
 	const urlObj = new URL(request.url);
@@ -843,9 +864,9 @@ async function getHomePage(request) {
 	// Check cookie authentication
 	const authToken = getCookie(request, 'auth_token');
 	if (authToken) {
-		const isValid = await verifyAuthToken(authToken, password, yourUUID);
+		const isValid = await verifyAuthToken(authToken, requestConfig.password, requestConfig.uuid);
 		if (isValid) {
-			return getMainPageContent(url, baseUrl);
+			return getMainPageContent(url, baseUrl, requestConfig);
 		}
 	}
 	
@@ -859,13 +880,13 @@ async function getHomePage(request) {
  * @param {import("@cloudflare/workers-types").Request} request
  * @returns {Response}
  */
-async function handleLogin(request) {
+async function handleLogin(request, requestConfig) {
 	try {
 		const formData = await request.formData();
 		const submittedPassword = formData.get('password');
 		
-		if (submittedPassword === password) {
-			const token = await generateAuthToken(password, yourUUID);
+		if (submittedPassword === requestConfig.password) {
+			const token = await generateAuthToken(requestConfig.password, requestConfig.uuid);
 			return new Response(null, {
 				status: 302,
 				headers: {
@@ -975,7 +996,7 @@ function getLoginPage(url, baseUrl, showError = false) {
  * @param {string} baseUrl 
  * @returns {Response}
  */
-function getMainPageContent(url, baseUrl) {
+function getMainPageContent(url, baseUrl, requestConfig) {
 	const html = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1340,19 +1361,19 @@ function getMainPageContent(url, baseUrl) {
             </div>
             <div class="info-item">
                 <span class="label">UUID</span>
-                <span class="value">${yourUUID}</span>
+                <span class="value">${requestConfig.uuid}</span>
             </div>
             <div class="info-item">
                 <span class="label">Universal Sub</span>
-                <span class="value">${baseUrl}/${subPath}</span>
+                <span class="value">${baseUrl}/${requestConfig.subPath}</span>
             </div>
             <div class="info-item">
                 <span class="label">Clash Sub</span>
-                <span class="value">https://sublink.eooce.com/clash?config=${baseUrl}/${subPath}</span>
+                <span class="value">https://sublink.eooce.com/clash?config=${baseUrl}/${requestConfig.subPath}</span>
             </div>
             <div class="info-item">
                 <span class="label">Sing-box Sub</span>
-                <span class="value">https://sublink.eooce.com/singbox?config=${baseUrl}/${subPath}</span>
+                <span class="value">https://sublink.eooce.com/singbox?config=${baseUrl}/${requestConfig.subPath}</span>
             </div>
         </div>
         
@@ -1420,7 +1441,7 @@ function getMainPageContent(url, baseUrl) {
         }
         
         function copySubscription() {
-            const configUrl = '${baseUrl}/${subPath}';
+            const configUrl = '${baseUrl}/${requestConfig.subPath}';
             navigator.clipboard.writeText(configUrl).then(() => {
                 showToast('Copied to clipboard!');
             }).catch(() => {
@@ -1435,7 +1456,7 @@ function getMainPageContent(url, baseUrl) {
         }
         
         function copyClashSubscription() {
-            const clashUrl = 'https://sublink.eooce.com/clash?config=${baseUrl}/${subPath}';
+            const clashUrl = 'https://sublink.eooce.com/clash?config=${baseUrl}/${requestConfig.subPath}';
             navigator.clipboard.writeText(clashUrl).then(() => {
                 showToast('Copied to clipboard!');
             }).catch(() => {
@@ -1450,7 +1471,7 @@ function getMainPageContent(url, baseUrl) {
         }
         
         function copySingboxSubscription() {
-            const singboxUrl = 'https://sublink.eooce.com/singbox?config=${baseUrl}/${subPath}';
+            const singboxUrl = 'https://sublink.eooce.com/singbox?config=${baseUrl}/${requestConfig.subPath}';
             navigator.clipboard.writeText(singboxUrl).then(() => {
                 showToast('Copied to clipboard!');
             }).catch(() => {
